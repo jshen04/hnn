@@ -23,7 +23,7 @@ def get_args():
     parser.add_argument('--latent_dim', default=1, type=int, help='pairs of coords in latent dimension of autoencoder')
     parser.add_argument('--learn_rate', default=1e-3, type=float, help='learning rate')
     parser.add_argument('--input_noise', default=0.0, type=float, help='std of noise added to HNN inputs')
-    parser.add_argument('--batch_size', default=125, type=int, help='batch size')
+    parser.add_argument('--batch_size', default=50, type=int, help='batch size')
     parser.add_argument('--nonlinearity', default='tanh', type=str, help='neural net nonlinearity')
     parser.add_argument('--total_steps', default=5000, type=int, help='number of gradient steps')
     parser.add_argument('--print_every', default=500, type=int, help='number of gradient steps between prints')
@@ -35,6 +35,7 @@ def get_args():
     parser.add_argument('--folder', default='NORMAL', type=str, help='which folder is the dataset in')
     parser.add_argument('--speed', default=14.0, type=float, help='corresponds to the speed in the dataset')
     parser.add_argument('--split_data', default=250000, type=int, help='creating model of part of the data')
+    parser.add_argument('--sub_columns', default=1, type=int, help='which set of columns to run model on')
     parser.add_argument('--cpu', dest='cpu', action='store_true', help='use cpu?')
     parser.set_defaults(feature=True)
     return parser.parse_args()
@@ -68,7 +69,6 @@ def hnn_ae_loss(x, x_next, model, return_scalar=True):
         return loss.mean()
     return loss
 
-
 def train(args):
     if torch.cuda.is_available() and not args.cpu:
         device = torch.device("cuda:0")
@@ -84,56 +84,42 @@ def train(args):
     np.random.seed(args.seed)
 
     if args.verbose:
-        print("{} {}".format(args.folder, args.speed))
-        print("Training scaled model:" if args.scaled else "Training noisy model:")
-        print('{} pairs of coords in latent space '.format(args.latent_dim))
+        print("Data from {} {}".format(args.folder, args.speed))
 
     # get dataset (no test data for now)
-    x_m = get_dataset(args.folder, args.speed, args.scaled, args.split_data)
-    x = torch.tensor(x_m[:-1], dtype=torch.float)
-    x_next = torch.tensor(x_m[1:], dtype=torch.float)
+    angular_velo, acc_1, acc_2, sound = get_dataset_split(args.folder, args.speed, args.scaled)
+    sub_col = {0: [angular_velo, 1, 'v'], 1: [acc_1, 3, 'a1'], 2: [acc_2, 3, 'a2'], 3: [sound, 1, 's']}
+    col2use = sub_col[args.sub_columns][0]
 
-    autoencoder = MLPAutoencoder(args.input_dim, args.hidden_dim, args.latent_dim * 2)
+    print(sub_col[args.sub_columns][2])
+
+    x = torch.tensor(col2use[:-1], dtype=torch.float)
+    x_next = torch.tensor(col2use[1:], dtype=torch.float)
+
+    autoencoder = MLPAutoencoder(sub_col[args.sub_columns][1], args.hidden_dim, args.latent_dim * 2)
     model = PixelHNN(args.latent_dim * 2, args.hidden_dim,
-                      autoencoder=autoencoder, nonlinearity=args.nonlinearity)
+                     autoencoder=autoencoder, nonlinearity=args.nonlinearity)
     model.to(device)
     optim = torch.optim.Adam(model.parameters(), args.learn_rate, weight_decay=1e-5)
 
     # vanilla ae train loop
-    stats = {'train_loss': [], 'test_loss': []}
+    stats = {'train_loss': []}
     for step in range(args.total_steps + 1):
-
         # train step
         ixs = torch.randperm(x.shape[0])[:args.batch_size]
         x_train, x_next_train = x[ixs].to(device), x_next[ixs].to(device)
-        # x_train, x_next_train=x[ixs], x_next[ixs]
         loss = hnn_ae_loss(x_train, x_next_train, model)
         loss.backward(); optim.step(); optim.zero_grad()
 
         stats['train_loss'].append(loss.item())
-
         if args.verbose and step % args.print_every == 0:
             print("step {}, train_loss {:.4e}"
-                       .format(step, loss.item()))
-
-        #     # run validation
-        #     test_ixs = torch.randperm(test_x.shape[0])[:args.batch_size]
-        #     test_loss = hnn_ae_loss(test_x[test_ixs], test_next_x[test_ixs], model)
-        #     stats['test_loss'].append(test_loss.item())
-        #
-        #     print("step {}, train_loss {:.4e}, test_loss {:.4e}"
-        #           .format(step, loss.item(), test_loss.item()))
+                  .format(step, loss.item()))
 
     train_dist = hnn_ae_loss(x, x_next, model, return_scalar=False)
     print('Final train loss {:.4e} +/- {:.4e}'
           .format(train_dist.mean().item(), train_dist.std().item() / np.sqrt(train_dist.shape[0])))
-
-    # test_dist = hnn_ae_loss(test_x, test_next_x, model, return_scalar=False)
-    # print('Final train loss {:.4e} +/- {:.4e}\nFinal test loss {:.4e} +/- {:.4e}'
-    #       .format(train_dist.mean().item(), train_dist.std().item() / np.sqrt(train_dist.shape[0])
-    #               , test_dist.mean().item(), test_dist.std().item() / np.sqrt(test_dist.shape[0]), ))
     return model
-
 
 if __name__ == "__main__":
     # timing the model
@@ -147,10 +133,10 @@ if __name__ == "__main__":
     os.makedirs(args.save_dir) if not os.path.exists(args.save_dir) else None
     fixed = '-scaled' if args.scaled else ''
     split = '-{}-datapoints'.format(args.split_data) if args.split_data != 250000 else ''
-    path = "{}/saved_models/motor-{}-{}-{}-pair{}{}.tar".format(args.save_dir, args.folder, args.speed,
-                                                                     args.latent_dim, fixed, split)
+    subcol = ['v', 'a1', 'a2', 's'][args.sub_columns]
+    path = "{}/saved_models/motor-{}-{}-{}-pair{}{}-{}.tar".format(args.save_dir, args.folder, args.speed,
+                                                                     args.latent_dim, fixed, split, subcol)
     torch.save(model.state_dict(), path)
-
     # timing the model
     t1 = time.time()
     total = t1 - t0
