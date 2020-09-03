@@ -15,7 +15,7 @@ parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(parent_dir)
 
 def get_dataset(folder, speed, scaled=False, split=250000, tensor=False, experiment_dir='.'):
-    path = '{}/dataset/{}/{}*.csv'.format(experiment_dir, folder, speed)
+    path = '{}/Final Data Set 08092020/{}/{}*.csv'.format(experiment_dir, folder, speed)
     print(path)
     path=glob.glob(path)[0]
     normal_data = pd.read_csv(path)
